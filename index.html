@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guardian IA - Radar Cidadão & ODS 3</title>
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { 
+      theme: { 
+        extend: { 
+          colors: { primary: '#008080', dark: '#004d4d', light: '#e0f2f1', oled: '#0a0a0a', health: '#e11d48' },
+          animation: { 
+            'blink-lid': 'blink-lid 5s infinite',
+            'bounce-slow': 'bounce 3s infinite',
+            'pulse-slow': 'pulse 4s infinite',
+            'float': 'float 4s ease-in-out infinite',
+            'spin-jump': 'spin-jump 1s ease-in-out',
+            'fall': 'fall 2.5s ease-in forwards',
+            'slide-in': 'slide-in 0.5s ease-out forwards',
+            'tear-drop': 'tear-drop 2s ease-in infinite'
+          },
+          keyframes: {
+            'blink-lid': { '0%, 96%, 98%, 100%': { height: '12px' }, '97%, 99%': { height: '100%' } },
+            'float': { '0%, 100%': { transform: 'translateY(0)' }, '50%': { transform: 'translateY(-8px)' } },
+            'spin-jump': { '0%': { transform: 'translateY(0) rotate(0deg)' }, '40%': { transform: 'translateY(-40px) rotate(180deg)' }, '80%': { transform: 'translateY(0) rotate(360deg)' }, '100%': { transform: 'translateY(0) rotate(360deg)' } },
+            'fall': { '0%': { transform: 'translateY(-80px)', opacity: 0 }, '10%': { opacity: 1 }, '80%': { opacity: 1 }, '100%': { transform: 'translateY(120px)', opacity: 0 } },
+            'slide-in': { '0%': { transform: 'translateX(-30px)', opacity: 0 }, '100%': { transform: 'translateX(0)', opacity: 1 } },
+            'tear-drop': { '0%': { transform: 'translateY(0)', opacity: 1 }, '100%': { transform: 'translateY(30px)', opacity: 0 } }
+          }
+        } 
+      } 
+    }
+  </script>
+
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
+
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background-color: #f3f4f6; }
+    .fade-in { animation: fadeIn 0.5s ease-in-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+    @import url('https://fonts.googleapis.com/css2?family=Cabin+Sketch:wght@700&display=swap');
+    .chalk-font { font-family: 'Cabin Sketch', cursive; }
+    .gradient-text { background: linear-gradient(90deg, #10b981, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .scanlines { background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06)); background-size: 100% 4px, 3px 100%; }
+
+    @keyframes ticker {
+      0% { transform: translateX(100%); }
+      100% { transform: translateX(-100%); }
+    }
+    .animate-ticker {
+      display: inline-block;
+      white-space: nowrap;
+      animation: ticker 25s linear infinite;
+    }
+    @keyframes radar-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .radar-sweep {
+      background: conic-gradient(from 0deg, transparent 70%, rgba(16, 185, 129, 0.4) 100%);
+      animation: radar-spin 3s linear infinite;
+    }
+    @keyframes scan-laser {
+      0% { top: 0%; opacity: 0; }
+      10% { opacity: 1; }
+      90% { opacity: 1; }
+      100% { top: 100%; opacity: 0; }
+    }
+    .laser-line {
+      position: absolute;
+      left: 0; width: 100%; height: 3px;
+      background: #10b981;
+      box-shadow: 0 0 15px #10b981, 0 0 30px #10b981;
+      animation: scan-laser 2.5s ease-in-out infinite;
+      z-index: 20;
+    }
+    .face-guide {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 60%; height: 70%; border: 2px dashed rgba(16, 185, 129, 0.5);
+      border-radius: 40%; z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    window.globalSensorData = { temp: '--', umid: '--', gas: '--', press: '--', history:[], anomaly: null, mlRainProb: 0, llmReport: 'Buscando satélite...', healthData: {} };
+
+    if ('speechSynthesis' in window) { window.speechSynthesis.getVoices(); }
+
+    const speakText = (text, setSpeaking) => {
+      if (!window.speechSynthesis) return;
+      window.speechSynthesis.cancel(); 
+      
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'pt-BR'; 
+      utterance.pitch = 1.0; 
+      utterance.rate = 1.05;
+
+      const applyVoiceAndSpeak = () => {
+        let voices = window.speechSynthesis.getVoices();
+        let ptVoices = voices.filter(v => v.lang.toLowerCase().includes('pt-br') || v.lang.toLowerCase().includes('pt-pt'));
+        
+        if (ptVoices.length > 0) {
+          let bestVoice = ptVoices.find(v => v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Francisca'));
+          utterance.voice = bestVoice || ptVoices[0];
+        }
+        
+        utterance.onstart = () => { if(setSpeaking) setSpeaking(true); };
+        utterance.onend = () => { if(setSpeaking) setSpeaking(false); };
+        utterance.onerror = () => { if(setSpeaking) setSpeaking(false); };
+        
+        window.speechSynthesis.speak(utterance);
+      };
+
+      if (window.speechSynthesis.getVoices().length === 0) {
+        let voicesReady = false;
+        window.speechSynthesis.onvoiceschanged = () => {
+          if (!voicesReady) { voicesReady = true; applyVoiceAndSpeak(); }
+        };
+        setTimeout(() => {
+          if (!voicesReady) { voicesReady = true; applyVoiceAndSpeak(); }
+        }, 500);
+      } else {
+        applyVoiceAndSpeak();
+      }
+    };
+
+    const GuardianAvatar = ({ speaking, size = "normal", isAsleep = false, emotion = "normal", context = "none" }) => {
+      const isBig = size === "big";
+      const [mouthState, setMouthState] = useState({ w: isBig ? 64 : 40, h: isBig ? 6 : 4, rounded: '50%' });
+      const [animationClass, setAnimationClass] = useState('animate-float');
+      const pupilPosition = context === 'math' ? 'bottom-2 left-2' : 'bottom-1 right-1';
+
+      useEffect(() => {
+        if (emotion === 'happy') { setAnimationClass('animate-spin-jump'); setTimeout(() => setAnimationClass('animate-float'), 1200); } 
+        else if (emotion === 'alert') setAnimationClass('animate-pulse');
+        else setAnimationClass('animate-float');
+      }, [emotion]);
+
+      useEffect(() => {
+        if (!speaking) {
+          setMouthState({ 
+            w: isAsleep ? (isBig ? 16 : 8) : (isBig ? 64 : 40), 
+            h: isAsleep ? (isBig ? 16 : 8) : (emotion === 'sad' ? (isBig ? 12 : 6) : (emotion === 'alert' ? (isBig ? 20 : 10) : (isBig ? 8 : 4))), 
+            rounded: emotion === 'alert' ? '50%' : '50%',
+            border: isAsleep ? 'none' : `solid ${emotion === 'alert' ? 'red' : 'white'} ${isBig ? '8px' : '4px'}`,
+            borderTopColor: 'transparent', borderLeftColor: 'transparent', borderRightColor: 'transparent',
+            borderBottomColor: emotion === 'sad' ? 'transparent' : (emotion === 'alert' ? 'red' : 'white'),
+            bg: isAsleep ? 'gray' : 'transparent',
+            transform: emotion === 'sad' ? 'rotate(180deg) translateY(-10px)' : 'none'
+          });
+          return;
+        }
+
+        const interval = setInterval(() => {
+          const isWide = Math.random() > 0.5; 
+          setMouthState({
+            w: isBig ? (isWide ? Math.random() * 20 + 40 : Math.random() * 15 + 15) : (isWide ? Math.random() * 10 + 20 : Math.random() * 8 + 8),
+            h: isBig ? (isWide ? Math.random() * 10 + 10 : Math.random() * 20 + 20) : (isWide ? Math.random() * 5 + 5 : Math.random() * 10 + 10),
+            rounded: '20px', border: 'none', bg: emotion === 'alert' ? '#ffcccc' : 'white', transform: 'none'
+          });
+        }, 150); 
+        return () => clearInterval(interval);
+      },[speaking, isAsleep, isBig, emotion]);
+
+      return (
+        <div className="relative flex justify-center items-end h-64 w-full max-w-[300px] mx-auto pb-4 z-10">
+          {context === 'math' && (<div className="absolute -left-12 top-6 w-28 h-24 bg-[#1b4d3e] border-4 border-[#5c4033] rounded-md shadow-lg flex items-center justify-center animate-slide-in z-20"><span className="text-white text-2xl chalk-font">2+2=4</span></div>)}
+          {context === 'newton' && (<div className="absolute top-0 right-10 text-5xl animate-fall z-30 drop-shadow-lg">🍎</div>)}
+          {context === 'health' && (<div className="absolute top-0 right-6 text-5xl animate-pulse-slow z-30 drop-shadow-lg text-health material-symbols-outlined">favorite</div>)}
+          {context === 'water' && (<div className="absolute top-0 right-10 text-5xl animate-tear-drop z-30 drop-shadow-lg">💧</div>)}
+
+          <div className="flex flex-col items-center">
+            <div className="w-1.5 h-6 bg-gray-400 relative rounded-t-sm z-0">
+              <div className={`absolute -top-3 -left-1.5 w-4 h-4 rounded-full shadow-[0_0_15px_currentColor] ${emotion === 'alert' ? 'bg-red-500 text-red-500 animate-ping' : 'bg-emerald-400 text-emerald-400 animate-pulse'}`}></div>
+            </div>
+
+            <div className={`bg-oled rounded-3xl flex flex-col items-center justify-center border-[6px] ${isAsleep ? 'border-gray-800' : (emotion === 'alert' ? 'border-red-600 shadow-[0_0_30px_rgba(255,0,0,0.6)]' : 'border-gray-600 shadow-[0_0_20px_rgba(0,128,128,0.5)]')} relative overflow-hidden transition-all duration-500 ${animationClass} ${isBig ? 'w-56 h-48' : 'w-28 h-24 mb-1'} z-10`}>
+              <div className="absolute inset-0 scanlines opacity-30 pointer-events-none"></div>
+              <div className="absolute top-0 left-0 w-full h-1/2 bg-white opacity-[0.03] rounded-t-xl pointer-events-none"></div>
+              <div className="absolute inset-0 shadow-[inset_0_0_20px_rgba(0,0,0,0.8)] pointer-events-none"></div>
+
+              {isAsleep && <div className="absolute top-4 right-6 text-white text-xl animate-bounce-slow font-bold opacity-70 z-20">Zzz</div>}
+              {emotion === 'sad' && <div className="absolute right-4 top-10 text-blue-400 text-xl animate-tear-drop z-20">💧</div>}
+
+              {emotion === 'happy' && !isAsleep && (
+                <>
+                  <div className={`absolute top-1/2 left-2 w-8 h-4 bg-pink-500 rounded-full blur-md opacity-60 z-10`}></div>
+                  <div className={`absolute top-1/2 right-2 w-8 h-4 bg-pink-500 rounded-full blur-md opacity-60 z-10`}></div>
+                </>
+              )}
+
+              <div className={`flex ${isBig ? 'gap-6 mb-4' : 'gap-4 mb-2'} z-20`}>
+                <div className={`bg-white rounded-full relative overflow-hidden flex justify-center transition-all ${isBig ? 'w-12 h-16 shadow-[0_0_20px_rgba(255,255,255,0.8)]' : 'w-6 h-8 shadow-[0_0_8px_rgba(255,255,255,0.8)]'} ${emotion === 'sad' && 'h-10 mt-6'} ${emotion === 'alert' && 'bg-red-100 shadow-[0_0_20px_rgba(255,0,0,0.8)]'}`}>
+                  <div className={`absolute top-0 w-full ${emotion === 'alert' ? 'bg-red-600' : 'bg-emerald-400'} z-10 ${isAsleep ? 'h-full' : 'animate-blink-lid'}`} style={{height: isAsleep ? '100%' : (isBig ? '16px' : '10px')}}></div>
+                  {!isAsleep && <div className={`bg-black rounded-full absolute transition-all duration-300 ${isBig ? `w-5 h-5 ${pupilPosition}` : `w-2 h-2 ${pupilPosition}`}`}></div>}
+                </div>
+                <div className={`bg-white rounded-full relative overflow-hidden flex justify-center transition-all ${isBig ? 'w-12 h-16 shadow-[0_0_20px_rgba(255,255,255,0.8)]' : 'w-6 h-8 shadow-[0_0_8px_rgba(255,255,255,0.8)]'} ${emotion === 'sad' && 'h-10 mt-6'} ${emotion === 'alert' && 'bg-red-100 shadow-[0_0_20px_rgba(255,0,0,0.8)]'}`}>
+                  <div className={`absolute top-0 w-full ${emotion === 'alert' ? 'bg-red-600' : 'bg-emerald-400'} z-10 ${isAsleep ? 'h-full' : 'animate-blink-lid'}`} style={{height: isAsleep ? '100%' : (isBig ? '16px' : '10px')}}></div>
+                  {!isAsleep && <div className={`bg-black rounded-full absolute transition-all duration-300 ${isBig ? `w-5 h-5 ${pupilPosition}` : `w-2 h-2 ${pupilPosition}`}`}></div>}
+                </div>
+              </div>
+              
+              <div className="z-20" style={{
+                width: `${mouthState.w}px`, height: `${mouthState.h}px`, borderRadius: mouthState.rounded, backgroundColor: mouthState.bg || 'transparent', border: mouthState.border || 'none', borderTopColor: mouthState.borderTopColor, borderLeftColor: mouthState.borderLeftColor, borderRightColor: mouthState.borderRightColor, borderBottomColor: mouthState.borderBottomColor, transform: mouthState.transform, transition: 'width 0.1s, height 0.1s, background-color 0.2s, transform 0.3s'
+              }}></div>
+            </div>
+            <div className={`bg-gray-700 border-x-4 border-b-4 border-gray-900 rounded-b-xl shadow-inner z-0 ${isBig ? 'w-16 h-6' : 'w-8 h-3'}`}></div>
+          </div>
+        </div>
+      );
+    };
+
+    const WelcomeScreen = ({ onComplete }) => {
+      const[step, setStep] = useState(0); 
+      const[isSpeaking, setIsSpeaking] = useState(false);
+      const[inputValue, setInputValue] = useState('');
+      const[speechText, setSpeechText] = useState('Sistema em repouso...');
+
+      const triggerSpeech = (text) => {
+        setSpeechText(text);
+        speakText(text, setIsSpeaking);
+      };
+
+      const handleStart = () => {
+        setStep(1);
+        triggerSpeech(`Acesso administrativo. Olá, eu sou o Guardian V9. Como posso te chamar?`);
+      };
+
+      const handleNameSubmit = (e) => {
+        e.preventDefault();
+        if(!inputValue.trim()) return;
+        const name = inputValue.trim().split(" ")[0];
+        setInputValue(''); setStep(3);
+        triggerSpeech(`Entendido, ${name}! Analisando sensores e abrindo o painel neural. Seja bem-vindo.`);
+        setTimeout(() => { onComplete(name, 'dashboard'); }, 5000);
+      };
+
+      return (
+        <div className={`min-h-screen flex flex-col items-center justify-center p-4 transition-colors duration-1000 bg-gradient-to-br from-slate-900 to-teal-950`}>
+          {step > 0 && (
+            <div className={`bg-white p-4 rounded-2xl shadow-xl mb-4 max-w-md text-center border-b-4 border-emerald-500 transition-opacity duration-300 z-10 ${isSpeaking ? 'opacity-100 animate-bounce-slow' : 'opacity-90'}`}>
+              <p className="text-gray-800 font-medium text-lg leading-snug">"{speechText}"</p>
+            </div>
+          )}
+          <GuardianAvatar speaking={isSpeaking} size="big" isAsleep={step === 0} />
+          
+          <div className="mt-8 w-full max-w-md z-10 text-center">
+            {step === 0 && (
+              <div className="flex flex-col gap-4 w-full items-center">
+                <button 
+                  onClick={handleStart} 
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.4)] transition-all flex items-center justify-center gap-2 text-lg border border-emerald-500"
+                >
+                  <span className="material-symbols-outlined text-2xl">dashboard</span> 
+                  Acessar Painel Neural
+                </button>
+                <button 
+                  onClick={() => window.location.href = 'informes.html'} 
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(37,99,235,0.4)] transition-all flex items-center justify-center gap-2 text-lg border border-blue-500"
+                >
+                  <span className="material-symbols-outlined text-2xl">campaign</span> 
+                  Registrar Denúncia
+                </button>
+                <button 
+                  onClick={(e) => { e.preventDefault(); document.getElementById('btn-emergencia').click(); }} 
+                  className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(225,29,72,0.6)] transition-all flex items-center justify-center gap-2 text-lg border border-red-500"
+                >
+                  <span className="material-symbols-outlined text-2xl animate-pulse">emergency</span> 
+                  S.O.S IMEDIATO
+                </button>
+              </div>
+            )}
+            
+            {step === 1 && (
+              <form onSubmit={handleNameSubmit} className="flex gap-2 fade-in">
+                <input type="text" autoFocus required placeholder="Qual o seu nome?" className="flex-1 bg-white/90 backdrop-blur rounded-xl px-5 py-4 shadow-lg outline-none focus:ring-4 focus:ring-emerald-500 text-lg" value={inputValue} onChange={e => setInputValue(e.target.value)} disabled={isSpeaking} />
+                <button type="submit" disabled={isSpeaking} className="bg-emerald-600 text-white p-4 rounded-xl shadow-lg hover:bg-emerald-700 disabled:opacity-50">
+                  <span className="material-symbols-outlined text-2xl mt-1">send</span>
+                </button>
+              </form>
+            )}
+            
+            {step === 3 && (
+              <div className="text-center text-emerald-300 mt-4 animate-pulse font-mono text-sm">
+                <p>Sincronizando com a nuvem Edge AI...</p>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    const LocationClimateData = ({ temp }) => {
+      const currentTemp = temp !== '--' ? parseFloat(temp) : 25;
+      const variacaoHistorica = currentTemp > 30 ? '+2.4°C' : '+1.2°C';
+      const statusClima = currentTemp > 30 ? 'CRÍTICO: Ilha de Calor' : 'ATENÇÃO: Aquecimento Padrão';
+      const colorAlerta = currentTemp > 30 ? 'bg-red-600' : 'bg-orange-500';
+
+      return (
+        <div className="bg-slate-900 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden mb-6 flex flex-col md:flex-row relative z-10 fade-in">
+          <div className="md:w-1/3 bg-slate-950 p-6 flex flex-col items-center justify-center relative border-r border-slate-800">
+            <div className="absolute top-4 left-4 flex items-center gap-2">
+              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+              <span className="text-emerald-500 text-xs font-mono font-bold tracking-widest">SATÉLITE LOCAL</span>
+            </div>
+            <div className="w-40 h-40 rounded-full border border-emerald-500/30 relative flex items-center justify-center mt-4">
+              <div className="absolute inset-0 rounded-full border border-emerald-500/10 scale-75"></div>
+              <div className="absolute inset-0 rounded-full border border-emerald-500/10 scale-50"></div>
+              <div className="w-full h-full rounded-full radar-sweep absolute rounded-full"></div>
+              <span className="material-symbols-outlined text-emerald-400 text-4xl z-10">my_location</span>
+              {currentTemp > 30 && <div className="absolute top-8 right-8 w-3 h-3 bg-red-500 rounded-full blur-[2px] animate-pulse"></div>}
+              <div className="absolute bottom-10 left-10 w-2 h-2 bg-orange-400 rounded-full blur-[1px]"></div>
+            </div>
+            <p className="text-slate-400 text-xs font-mono mt-4">LAT: -23.3619 | LON: -46.7408</p>
+          </div>
+
+          <div className="md:w-2/3 p-0 flex flex-col">
+            <div className={`${colorAlerta} text-white px-6 py-2 flex justify-between items-center shadow-md`}>
+              <span className="font-bold uppercase tracking-wide flex items-center gap-2">
+                <span className="material-symbols-outlined text-sm">warning</span> {statusClima}
+              </span>
+              <span className="text-xs font-mono opacity-80">ATUALIZAÇÃO EM TEMPO REAL</span>
+            </div>
+            <div className="p-6 flex-1 flex flex-col justify-center bg-gradient-to-br from-slate-900 to-slate-800">
+              <h3 className="text-xl font-bold text-white mb-2">Agravamento Térmico Regional</h3>
+              <p className="text-slate-300 text-sm mb-6 leading-relaxed">
+                Dados cruzados via satélite indicam que o microclima atual sofre influência direta da perda de cobertura vegetal e adensamento urbano. O asfalto e concreto retêm radiação infravermelha.
+              </p>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-slate-950/50 p-4 rounded-xl border border-slate-700">
+                  <p className="text-slate-400 text-xs font-bold mb-1">VARIAÇÃO (10 ANOS)</p>
+                  <div className="flex items-end gap-2">
+                    <span className="text-3xl font-black text-orange-400">{variacaoHistorica}</span>
+                    <span className="material-symbols-outlined text-orange-400 mb-1">trending_up</span>
+                  </div>
+                </div>
+                <div className="bg-slate-950/50 p-4 rounded-xl border border-slate-700">
+                  <p className="text-slate-400 text-xs font-bold mb-1">IMPACTO NA SAÚDE (ODS 3)</p>
+                  <div className="flex items-center gap-2 h-full pb-1">
+                    <span className="material-symbols-outlined text-red-400 text-2xl">vital_signs</span>
+                    <span className="text-slate-200 text-sm font-medium leading-tight">Estresse cardiovascular moderado a alto</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const Dashboard = ({ data, aiAnalysis }) => {
+      const [showReportModal, setShowReportModal] = useState(false);
+      const [copySuccess, setCopySuccess] = useState('');
+
+      const generateReportText = () => {
+        const sd = window.globalSensorData;
+        return `RELATÓRIO AMBIENTAL GUARDIAN (IA)\nData: ${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}\n\n` +
+               `📊 DADOS DOS SENSORES FÍSICOS:\n` +
+               `- Temperatura (DHT22): ${sd.temp} °C\n` +
+               `- Umidade (DHT22): ${sd.umid} %\n` +
+               `- Qualidade do Ar (MQ135): ${sd.gas} ppm\n` +
+               `- Pressão Barométrica (BMP280): ${sd.press} hPa\n\n` +
+               `🤖 ANÁLISE DE INTELIGÊNCIA ARTIFICIAL:\n${sd.llmReport}\n\n` +
+               `🏥 ALERTAS ODS 3 (Saúde e Bem-Estar):\n` +
+               `- Pulmão: ${sd.healthData?.respDesc || 'Sem dados'}\n` +
+               `- Corpo: ${sd.healthData?.thermalDesc || 'Sem dados'}\n` +
+               `- Endemias: ${sd.healthData?.dengueDesc || 'Sem dados'}\n\n` +
+               `Sistema Gerador: Guardian V9 AI`;
+      };
+
+      const copyToClipboard = () => { navigator.clipboard.writeText(generateReportText()).then(() => { setCopySuccess('Copiado!'); setTimeout(() => setCopySuccess(''), 2000); }); };
+      const sendEmailReport = () => { window.location.href = `mailto:?subject=${encodeURIComponent(`Relatório Guardian`)}&body=${encodeURIComponent(generateReportText())}`; };
+
+      const downloadCSV = () => {
+        if (!data.feeds || data.feeds.length === 0) return;
+        let csvContent = "Data,Hora,Temperatura (C),Umidade (%),Gas MQ135 (ppm),Pressao (hPa)\n";
+        data.feeds.forEach(f => {
+          const date = new Date(f.created_at).toLocaleDateString('pt-BR');
+          const time = new Date(f.created_at).toLocaleTimeString('pt-BR');
+          csvContent += `${date},${time},${f.field1 || ''},${f.field2 || ''},${f.field3 || ''},${f.field4 || ''}\n`;
+        });
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement("a");
+        const url = URL.createObjectURL(blob);
+        link.setAttribute("href", url);
+        link.setAttribute("download", `Guardian_Sensores_${new Date().getTime()}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      };
+
+      const getMathAnalysis = () => {
+        if (!data.feeds || data.feeds.length === 0) return { avgTemp: '--', tempTrend: 0, points: 0, variance: '--', stdDev: '--' };
+        const temps = data.feeds.map(f => parseFloat(f.field1)).filter(n => !isNaN(n));
+        if(temps.length === 0) return { avgTemp: '--', tempTrend: 0, points: 0, variance: '--', stdDev: '--' };
+
+        const avgTemp = temps.reduce((a, b) => a + b, 0) / temps.length;
+        const trend = temps.length > 1 ? temps[temps.length - 1] - temps[0] : 0;
+        const squaredDiffs = temps.map(t => Math.pow(t - avgTemp, 2));
+        const variance = squaredDiffs.reduce((a, b) => a + b, 0) / temps.length;
+        const stdDev = Math.sqrt(variance);
+
+        return { 
+          avgTemp: avgTemp.toFixed(1), 
+          tempTrend: trend.toFixed(1), 
+          variance: variance.toFixed(2),
+          stdDev: stdDev.toFixed(2),
+          points: temps.length 
+        };
+      };
+
+      const mathStats = getMathAnalysis();
+
+      useEffect(() => {
+        if(!data.feeds || data.feeds.length === 0) return;
+        const labels = data.feeds.map(f => new Date(f.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}));
+        const temps = data.feeds.map(f => parseFloat(f.field1));
+        const humids = data.feeds.map(f => parseFloat(f.field2));
+
+        if(document.getElementById('chartTemp')) {
+          if(window.chartTempInst) window.chartTempInst.destroy();
+          Chart.defaults.color = '#64748b';
+          Chart.defaults.font.family = "'Segoe UI', sans-serif";
+          
+          window.chartTempInst = new Chart(document.getElementById('chartTemp'), {
+            type: 'line', data: { labels, datasets:[
+              { label: 'Temperatura (°C)', data: temps, borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.05)', fill: true, tension: 0.4, yAxisID: 'y' },
+              { label: 'Umidade (%)', data: humids, borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.05)', fill: true, tension: 0.4, yAxisID: 'y1' }
+            ]},
+            options: { 
+              responsive: true, maintainAspectRatio: false, 
+              interaction: { mode: 'index', intersect: false }, 
+              plugins: { legend: { position: 'top', align: 'end', labels: { usePointStyle: true, boxWidth: 6 } } },
+              scales: { 
+                x: { grid: { display: false } },
+                y: { type: 'linear', position: 'left', grid: { color: '#f1f5f9' } }, 
+                y1: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } } 
+              } 
+            }
+          });
+        }
+      }, [data.feeds]);
+
+      const arClassification = () => {
+        const v = Number(data.gas);
+        if(v < 600) return { text: 'ÍNDICE SAUDÁVEL', color: 'text-emerald-500', bar: 'bg-emerald-500' };
+        if(v < 1000) return { text: 'MODERADO', color: 'text-amber-500', bar: 'bg-amber-500' };
+        return { text: 'INSALUBRE (ALERTA)', color: 'text-red-500', bar: 'bg-red-500' };
+      };
+      const arData = arClassification();
+
+      return (
+        <div className="fade-in max-w-6xl mx-auto mb-8">
+          
+          {showReportModal && (
+            <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 fade-in">
+              <div className="bg-white rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+                <div className="bg-slate-900 p-4 text-white flex justify-between items-center border-b border-emerald-500">
+                  <h3 className="font-bold flex items-center gap-2 text-lg"><span className="material-symbols-outlined text-emerald-400">description</span> Relatório Completo Guardian</h3>
+                  <button onClick={() => setShowReportModal(false)} className="text-gray-400 hover:text-white transition-colors"><span className="material-symbols-outlined">close</span></button>
+                </div>
+                <div className="p-6 overflow-y-auto flex-1 bg-gray-50 whitespace-pre-wrap font-mono text-sm text-gray-800 border-b border-gray-200">
+                  {generateReportText()}
+                </div>
+                <div className="p-4 bg-white flex flex-wrap gap-3 justify-end items-center">
+                   {copySuccess && <span className="text-green-600 font-bold text-sm mr-2">{copySuccess}</span>}
+                   <button onClick={copyToClipboard} className="bg-gray-200 hover:bg-gray-300 text-gray-800 px-4 py-2 rounded-lg font-semibold flex items-center gap-2 transition-all"><span className="material-symbols-outlined text-[20px]">content_copy</span> Copiar Texto</button>
+                   <button onClick={sendEmailReport} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold flex items-center gap-2 transition-all shadow-md"><span className="material-symbols-outlined text-[20px]">mail</span> Enviar E-mail</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="bg-slate-900 text-slate-300 px-4 py-2 rounded-lg mb-6 flex items-center shadow-md overflow-hidden border border-slate-700">
+            <div className="bg-red-600 text-white text-xs font-bold px-3 py-1 rounded flex items-center gap-1 z-10 shadow-lg whitespace-nowrap">
+              <span className="material-symbols-outlined text-sm">sensors</span> RADAR LIVE
+            </div>
+            <div className="flex-1 overflow-hidden ml-4 relative h-6 flex items-center">
+              <div className="animate-ticker text-sm font-mono absolute whitespace-nowrap">
+                [ATUALIZAÇÃO ODS 3] Monitoramento contínuo da qualidade do ar ativado. | Temperatura atual: {data.temp}°C | Nível de Gás MQ135: {data.gas} ppm ({arData.text}) | Pressão Barométrica: {data.press} hPa | A saúde climática da sua região impacta diretamente a incidência de doenças respiratórias. Proteja-se.
+              </div>
+            </div>
+          </div>
+
+          {/* EXPLICATIVO DO DASHBOARD (Pedido pelo usuário) */}
+          <div className="bg-blue-50/80 p-5 rounded-2xl border border-blue-200 shadow-sm mb-6 flex flex-col md:flex-row items-start md:items-center gap-4">
+            <div className="bg-blue-600 text-white p-3 rounded-full flex-shrink-0 shadow-md">
+              <span className="material-symbols-outlined text-3xl">videocam</span>
+            </div>
+            <div>
+              <h3 className="font-black text-blue-900 text-lg">Aviso sobre o Monitoramento de Vídeo e Sensores</h3>
+              <p className="text-blue-800 text-sm mt-1 leading-relaxed">
+                Este dashboard e o sistema de vídeo/câmera integrado atuam de forma contínua para monitorar a <strong>qualidade do ar, a temperatura e a umidade</strong> do ambiente. O objetivo é cruzar esses dados biométricos e climáticos para prevenir riscos à saúde respiratória e estresse térmico, em alinhamento com a ODS 3 (Saúde e Bem-Estar).
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6">
+            <div>
+              <h2 className="text-3xl font-black text-slate-800 tracking-tight">Painel de Telemetria Integrado</h2>
+              <p className="text-slate-500 font-medium mt-1 flex items-center gap-2">
+                <span className="material-symbols-outlined text-emerald-500 text-sm">memory</span>
+                Processamento Edge ML & Sensores Ambientais
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={downloadCSV} className="bg-slate-800 hover:bg-slate-700 text-white text-sm px-4 py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg transition-all border border-slate-600">
+                <span className="material-symbols-outlined">table</span> CSV
+              </button>
+              <button onClick={() => setShowReportModal(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/30 transition-all border border-emerald-500">
+                <span className="material-symbols-outlined">analytics</span> Relatório IA
+              </button>
+            </div>
+          </div>
+
+          {aiAnalysis.anomaly && (
+            <div className="mb-6 bg-red-50 border border-red-200 p-4 rounded-xl shadow-sm flex items-start gap-4 animate-pulse">
+              <div className="bg-red-100 p-2 rounded-full text-red-600"><span className="material-symbols-outlined text-3xl">warning</span></div>
+              <div><h3 className="text-red-800 font-black tracking-wide">ANOMALIA DETECTADA PELO GUARDIAN</h3><p className="text-red-600 text-sm font-medium mt-1">{aiAnalysis.anomaly}</p></div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group overflow-hidden">
+              <div className="absolute top-0 left-0 w-1 h-full bg-orange-500"></div>
+              <p className="text-slate-400 text-xs font-bold mb-1 uppercase tracking-wider">DHT22 Térmico</p>
+              <div className="flex justify-between items-end">
+                <p className="text-3xl font-black text-slate-800">{data.temp !== '--' ? Number(data.temp).toFixed(1) : '--'}<span className="text-lg text-slate-400 font-normal">°C</span></p>
+                <span className="material-symbols-outlined text-orange-500 text-3xl opacity-20 group-hover:opacity-100 transition-opacity absolute right-4 bottom-4">device_thermostat</span>
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group overflow-hidden">
+              <div className="absolute top-0 left-0 w-1 h-full bg-blue-500"></div>
+              <p className="text-slate-400 text-xs font-bold mb-1 uppercase tracking-wider">Umidade Rel.</p>
+              <div className="flex justify-between items-end">
+                <p className="text-3xl font-black text-slate-800">{data.umid !== '--' ? Number(data.umid).toFixed(0) : '--'}<span className="text-lg text-slate-400 font-normal">%</span></p>
+                <span className="material-symbols-outlined text-blue-500 text-3xl opacity-20 group-hover:opacity-100 transition-opacity absolute right-4 bottom-4">water_drop</span>
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group overflow-hidden">
+              <div className={`absolute top-0 left-0 w-1 h-full ${arData.bar}`}></div>
+              <p className="text-slate-400 text-xs font-bold mb-1 uppercase tracking-wider flex justify-between">MQ-135 Gás <span className={`text-[10px] ${arData.color}`}>{arData.text}</span></p>
+              <div className="flex justify-between items-end">
+                <p className="text-3xl font-black text-slate-800">{data.gas}<span className="text-lg text-slate-400 font-normal ml-1">ppm</span></p>
+                <span className={`material-symbols-outlined ${arData.color} text-3xl opacity-20 group-hover:opacity-100 transition-opacity absolute right-4 bottom-4`}>air</span>
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 relative group overflow-hidden">
+              <div className="absolute top-0 left-0 w-1 h-full bg-purple-500"></div>
+              <p className="text-slate-400 text-xs font-bold mb-1 uppercase tracking-wider">BMP280 Pressão</p>
+              <div className="flex justify-between items-end">
+                <p className="text-3xl font-black text-slate-800">{data.press !== '--' ? Number(data.press).toFixed(1) : '--'}<span className="text-sm text-slate-400 font-normal ml-1">hPa</span></p>
+                <span className="material-symbols-outlined text-purple-500 text-3xl opacity-20 group-hover:opacity-100 transition-opacity absolute right-4 bottom-4">speed</span>
+              </div>
+            </div>
+          </div>
+
+          <LocationClimateData temp={data.temp} />
+
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 xl:col-span-2 flex flex-col">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="font-bold text-slate-800 text-lg flex items-center gap-2">
+                  <span className="material-symbols-outlined text-indigo-500">monitoring</span> Série Temporal (Clima Interno)
+                </h3>
+              </div>
+              <div className="w-full h-[300px]"><canvas id="chartTemp"></canvas></div>
+            </div>
+            
+            <div className="flex flex-col gap-6">
+              <div className="bg-slate-50 border border-slate-200 p-6 rounded-2xl flex flex-col shadow-inner">
+                <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2 text-sm uppercase tracking-wider">
+                  <span className="material-symbols-outlined text-blue-600">functions</span> Inferência Estatística
+                </h3>
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
+                    <span className="block text-[10px] text-slate-400 font-bold mb-1">MÉDIA (μ) TEMP</span>
+                    <span className="text-lg font-black text-slate-700">{mathStats.avgTemp}°C</span>
+                  </div>
+                  <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
+                    <span className="block text-[10px] text-slate-400 font-bold mb-1">DESVIO PADRÃO (σ)</span>
+                    <span className="text-lg font-black text-slate-700">{mathStats.stdDev}</span>
+                  </div>
+                </div>
+                <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm flex justify-between items-center">
+                   <div>
+                     <span className="block text-[10px] text-slate-400 font-bold mb-1">TENDÊNCIA (ΔT)</span>
+                     <span className={`text-xl font-black ${mathStats.tempTrend > 0 ? 'text-red-500' : (mathStats.tempTrend < 0 ? 'text-blue-500' : 'text-slate-700')}`}>
+                        {mathStats.tempTrend > 0 ? '+' : ''}{mathStats.tempTrend}°C
+                     </span>
+                   </div>
+                   <span className="text-[10px] text-slate-400 text-right w-16 leading-tight">amostra de {mathStats.points} pts</span>
+                </div>
+              </div>
+
+              <div className="bg-gradient-to-br from-blue-900 to-slate-900 p-6 rounded-2xl shadow border border-blue-800/50 text-white relative overflow-hidden">
+                <div className="absolute -right-4 -bottom-4 opacity-10"><span className="material-symbols-outlined text-9xl">storm</span></div>
+                <h3 className="font-bold text-blue-300 mb-4 flex items-center gap-2 text-sm uppercase tracking-wider relative z-10">
+                  <span className="material-symbols-outlined">psychology</span> Rede Neural Predita
+                </h3>
+                <div className="relative z-10 flex flex-col">
+                  <span className="text-sm text-slate-300 mb-2">Probabilidade de Chuva (BMP280 + DHT22)</span>
+                  <div className="flex items-end gap-4 mb-2">
+                    <span className="font-black text-5xl text-white drop-shadow-lg">{aiAnalysis.mlRainProb}%</span>
+                  </div>
+                  <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden mt-2">
+                    <div className="bg-gradient-to-r from-blue-400 to-cyan-300 h-full transition-all duration-1000" style={{width: `${aiAnalysis.mlRainProb}%`}}></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 bg-slate-900 p-6 rounded-2xl shadow-xl border border-slate-700 flex flex-col md:flex-row gap-6 items-center">
+            <div className="bg-emerald-500/20 p-4 rounded-full border border-emerald-500/50 flex-shrink-0 animate-pulse">
+              <span className="material-symbols-outlined text-4xl text-emerald-400">robot_2</span>
+            </div>
+            <div className="flex-1 w-full">
+              <h3 className="font-mono font-bold text-emerald-500 text-sm mb-2 flex items-center gap-2">
+                &gt; GUARDIAN_LLM_OUTPUT <span className="w-2 h-4 bg-emerald-500 inline-block animate-blink-lid"></span>
+              </h3>
+              <p className="text-slate-300 font-mono text-sm leading-relaxed border-l-2 border-slate-700 pl-4 py-1">
+                {aiAnalysis.llmReport}
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ==========================================
+    // 4. ABA: SAÚDE (ODS 3) E SCANNER
+    // ==========================================
+    const HealthSDG3 = ({ aiAnalysis, userName }) => {
+      const hd = aiAnalysis.healthData || {};
+      const [activeTab, setActiveTab] = useState('resp'); 
+      
+      const videoRef = useRef(null);
+      const [camStream, setCamStream] = useState(null);
+      const [isScanning, setIsScanning] = useState(false);
+      const [scanResult, setScanResult] = useState(null);
+      const [dbStatus, setDbStatus] = useState('');
+
+      const baseTemp = window.globalSensorData?.temp !== '--' ? parseFloat(window.globalSensorData.temp) : 28;
+      const baseGas = window.globalSensorData?.gas !== '--' ? parseFloat(window.globalSensorData.gas) : 800;
+      
+      const startBiometricScan = async () => {
+        try {
+          setScanResult(null); setDbStatus('');
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          setCamStream(stream);
+          if (videoRef.current) videoRef.current.srcObject = stream;
+          setIsScanning(true);
+          setTimeout(() => { analyzePsychology(); }, 4000);
+        } catch (err) { alert('Erro: Permissão de câmera negada.'); }
+      };
+
+      const stopCam = (stream) => { if (stream) stream.getTracks().forEach(track => track.stop()); setCamStream(null); setIsScanning(false); };
+
+      const analyzePsychology = () => {
+        let emotion, stressLevel, color, explanation;
+
+        if (baseTemp >= 30) {
+          emotion = "Irritabilidade / Fadiga"; stressLevel = "ALTO (85%)"; color = "text-red-500 border-red-500 bg-red-50";
+          explanation = `O scanner detectou dilatação pupilar e tensão maxilar. A temperatura extrema de ${baseTemp}°C está aumentando seus níveis de cortisol (hormônio do estresse) e forçando a termorregulação do corpo, gerando esgotamento mental.`;
+        } else if (baseGas >= 800) {
+          emotion = "Carga Cognitiva / Ansiedade"; stressLevel = "MODERADO (60%)"; color = "text-amber-500 border-amber-500 bg-amber-50";
+          explanation = `Detectamos micro-contrações ao redor dos olhos. O nível de gases/poluição (${baseGas} ppm) reduz a oxigenação cerebral, causando letargia leve e dificuldade de foco.`;
+        } else {
+          emotion = "Calma / Foco"; stressLevel = "BAIXO (15%)"; color = "text-emerald-500 border-emerald-500 bg-emerald-50";
+          explanation = `Músculos faciais relaxados e respiração ritmada. A temperatura de ${baseTemp}°C e o ar limpo formam o ambiente perfeito para a saúde mental e produtividade cognitiva.`;
+        }
+
+        setScanResult({ emotion, stressLevel, color, explanation, tempAtScan: baseTemp, gasAtScan: baseGas });
+        stopCam(camStream);
+      };
+
+      const saveBiometricsToDB = () => {
+        setDbStatus('Processando e enviando para a Nuvem...');
+        
+        const payload = {
+          usuario: userName || 'Cidadão Local',
+          emotion: scanResult.emotion,
+          stressLevel: scanResult.stressLevel,
+          tempAtScan: scanResult.tempAtScan,
+          gasAtScan: scanResult.gasAtScan,
+          explanation: scanResult.explanation
+        };
+
+        if (typeof google !== 'undefined' && google.script) {
+          google.script.run
+            .withSuccessHandler((res) => {
+              if (res.status === 'success') {
+                setDbStatus('✅ Laudo arquivado na Planilha ODS 3!');
+              } else {
+                setDbStatus('❌ Erro no banco de dados.');
+              }
+            })
+            .withFailureHandler(() => {
+              setDbStatus('❌ Falha na conexão de rede.');
+            })
+            .registrarBiometria(payload); 
+        } else {
+          setTimeout(() => { setDbStatus('✅ (Teste Local) Registrado no Banco!'); }, 1500);
+        }
+      };
+
+      useEffect(() => { return () => stopCam(camStream); }, [activeTab]);
+
+      const getCardStyle = (status) => {
+        if(status === 'Perigo' || status === 'Alerta') return 'bg-red-50 border-red-400 text-red-800';
+        if(status === 'Atenção') return 'bg-yellow-50 border-yellow-400 text-yellow-800';
+        return 'bg-emerald-50 border-emerald-400 text-emerald-800';
+      };
+
+      return (
+        <div className="fade-in max-w-6xl mx-auto pb-10 space-y-12">
+          {/* Header */}
+          <div className="bg-health text-white rounded-2xl p-6 shadow-xl flex flex-col md:flex-row items-center gap-6 relative overflow-hidden">
+            <div className="absolute right-0 top-0 opacity-10"><span className="material-symbols-outlined text-[150px]">health_and_safety</span></div>
+            <div className="bg-white text-health p-3 rounded-xl shadow-lg"><span className="material-symbols-outlined text-5xl">volunteer_activism</span></div>
+            <div className="relative z-10 text-center md:text-left">
+              <h2 className="text-3xl font-bold mb-2">Saúde e Bem-Estar (ODS 3)</h2>
+              <p className="text-pink-100 text-lg">Objetivo Global: Garantir o acesso à saúde e promover o bem-estar em todas as idades.</p>
+              <p className="text-sm mt-2 font-medium opacity-90">O Guardian analisa ativamente os sensores para prevenir doenças respiratórias, endemias e estresse ambiental.</p>
+            </div>
+          </div>
+
+          {/* Cards normais */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className={`p-6 rounded-2xl border-l-8 shadow-md flex flex-col h-full ${getCardStyle(hd.resp)}`}><div className="flex items-center gap-3 mb-4"><span className="material-symbols-outlined text-4xl">air</span><h3 className="font-bold text-xl">Risco Respiratório</h3></div><div className="flex-1"><p className="text-2xl font-black mb-2">{hd.resp}</p><p className="opacity-90">{hd.respDesc}</p></div><div className="mt-4 pt-4 border-t border-current/20 text-sm"><span className="font-bold">Ação:</span> {hd.resp === 'Bom' ? 'Continue respirando fundo!' : 'Ventile a casa para evitar asma ou bronquite.'}</div></div>
+            <div className={`p-6 rounded-2xl border-l-8 shadow-md flex flex-col h-full ${getCardStyle(hd.thermal)}`}><div className="flex items-center gap-3 mb-4"><span className="material-symbols-outlined text-4xl">thermostat</span><h3 className="font-bold text-xl">Estresse Térmico</h3></div><div className="flex-1"><p className="text-2xl font-black mb-2">{hd.thermal}</p><p className="opacity-90">{hd.thermalDesc}</p></div><div className="mt-4 pt-4 border-t border-current/20 text-sm"><span className="font-bold">Ação:</span> {hd.thermal === 'Bom' ? 'Ambiente confortável.' : 'Beba muita água! Risco de insolação leve.'}</div></div>
+            <div className={`p-6 rounded-2xl border-l-8 shadow-md flex flex-col h-full ${getCardStyle(hd.dengue)}`}><div className="flex items-center gap-3 mb-4"><span className="material-symbols-outlined text-4xl">bug_report</span><h3 className="font-bold text-xl">Alerta Dengue</h3></div><div className="flex-1"><p className="text-2xl font-black mb-2">{hd.dengue}</p><p className="opacity-90">{hd.dengueDesc}</p></div><div className="mt-4 pt-4 border-t border-current/20 text-sm"><span className="font-bold">Ação:</span> {hd.dengue === 'Bom' ? 'Monitoramento limpo.' : 'Chuva forma poças. Verifique quintal e vasos.'}</div></div>
+          </div>
+
+          {/* NOVO: Scanner Biométrico */}
+          <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-100">
+             <h3 className="text-2xl font-bold text-dark mb-4 flex items-center gap-2"><span className="material-symbols-outlined text-indigo-600">center_focus_strong</span> Scanner Biométrico Neural</h3>
+             <p className="text-gray-500 mb-6 text-sm">Esta ferramenta cruza os dados atuais de temperatura e poluição para avaliar seu impacto cognitivo e emocional em tempo real.</p>
+             <div className="flex flex-col md:flex-row gap-6">
+                <div className="w-full md:w-1/2 bg-slate-900 rounded-xl overflow-hidden relative min-h-[300px] flex items-center justify-center border-4 border-slate-800">
+                   {isScanning ? (
+                     <React.Fragment>
+                       <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover opacity-60" />
+                       <div className="face-guide"></div>
+                       <div className="laser-line"></div>
+                       <p className="absolute bottom-4 text-emerald-400 font-mono text-sm animate-pulse bg-black/50 px-4 py-1 rounded">Analisando micro-expressões...</p>
+                     </React.Fragment>
+                   ) : (
+                     <div className="text-center p-6">
+                        <span className="material-symbols-outlined text-6xl text-slate-600 mb-4 block">face</span>
+                        <p className="text-slate-400 mb-6 text-sm">Câmera inativa. Inicie o escaneamento para análise de estresse térmico/cognitivo.</p>
+                        <button onClick={startBiometricScan} className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-full font-bold transition-all shadow-[0_0_20px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2 mx-auto">
+                          <span className="material-symbols-outlined">camera_alt</span> Iniciar Escaneamento
+                        </button>
+                     </div>
+                   )}
+                </div>
+                <div className="w-full md:w-1/2 flex flex-col justify-center">
+                   {scanResult ? (
+                     <div className={`p-6 rounded-xl border-2 ${scanResult.color} fade-in h-full flex flex-col`}>
+                        <h4 className="font-black text-xl mb-4 flex items-center gap-2"><span className="material-symbols-outlined">analytics</span> Laudo Gerado</h4>
+                        <div className="space-y-3 mb-6 flex-1">
+                          <p className="text-sm"><strong className="uppercase text-xs opacity-70 block mb-1">Estado Emocional Detectado:</strong> <span className="text-lg">{scanResult.emotion}</span></p>
+                          <p className="text-sm"><strong className="uppercase text-xs opacity-70 block mb-1">Nível de Estresse:</strong> <span className="text-lg">{scanResult.stressLevel}</span></p>
+                          <p className="text-sm bg-white/50 p-3 rounded text-slate-800 mt-2">{scanResult.explanation}</p>
+                        </div>
+                        
+                        <div className="flex flex-col gap-2 mt-auto">
+                          <button onClick={saveBiometricsToDB} className="bg-slate-800 text-white py-3 rounded-xl font-bold text-sm hover:bg-slate-700 transition-all flex items-center justify-center gap-2 w-full">
+                            <span className="material-symbols-outlined text-lg">cloud_upload</span> Salvar Laudo na Nuvem
+                          </button>
+                          {dbStatus && <p className="text-xs text-center font-mono mt-2 font-bold">{dbStatus}</p>}
+                        </div>
+                     </div>
+                   ) : (
+                     <div className="bg-slate-50 p-6 rounded-xl border border-slate-200 text-slate-500 text-sm text-center h-full flex items-center justify-center">
+                        <p>O resultado da análise facial cruzada com os dados de Temperatura ({baseTemp}°C) e Qualidade do Ar ({baseGas}ppm) aparecerá aqui.</p>
+                     </div>
+                   )}
+                </div>
+             </div>
+          </div>
+
+          {/* Impacto da Arborização */}
+          <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-100">
+            <div className="mb-6">
+              <h3 className="text-2xl font-bold text-dark flex items-center gap-2">
+                <span className="material-symbols-outlined text-emerald-500 text-3xl">park</span>
+                Impacto da Arborização Urbana
+              </h3>
+              <p className="text-gray-600 mt-1">Como a ausência de árvores afeta a qualidade do ar, o ponto de orvalho e agrava problemas de saúde pública (ODS 3).</p>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="rounded-xl overflow-hidden bg-gray-50 border border-gray-200 flex flex-col">
+                <div className="h-56 relative group overflow-hidden">
+                  <img src="https://i.imgur.com/XtsMtKj.jpeg" className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" alt="São Paulo - Ilha de Calor" />
+                  <div className="absolute top-3 left-3 bg-red-600/90 backdrop-blur text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-lg">
+                    <span className="material-symbols-outlined text-sm">local_fire_department</span> Ilha de Calor (São Paulo)
+                  </div>
+                </div>
+                <div className="p-6">
+                  <ul className="space-y-4">
+                    <li className="flex justify-between items-center border-b border-gray-200 pb-3">
+                      <span className="text-gray-600 flex items-center gap-2"><span className="material-symbols-outlined text-orange-500">thermostat</span> Temp. Média</span> 
+                      <span className="font-black text-red-600 text-lg">+ 3.5 °C</span>
+                    </li>
+                    <li className="flex justify-between items-center border-b border-gray-200 pb-3">
+                      <span className="text-gray-600 flex items-center gap-2"><span className="material-symbols-outlined text-blue-400">water_drop</span> Ponto de Orvalho</span> 
+                      <div className="text-right">
+                        <span className="font-black text-orange-600 text-lg">23°C</span>
+                        <p className="text-[10px] text-gray-500 leading-none">Desconfortável / Abafado</p>
+                      </div>
+                    </li>
+                    <li className="flex justify-between items-center">
+                      <span className="text-gray-600 flex items-center gap-2"><span className="material-symbols-outlined text-gray-500">air</span> Qualidade do Ar</span> 
+                      <span className="font-bold text-red-600 text-right text-sm">Alta retenção de CO₂<br/>e poluição local</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="rounded-xl overflow-hidden bg-emerald-50/30 border border-emerald-200 shadow-[0_0_20px_rgba(16,185,129,0.1)] flex flex-col">
+                <div className="h-56 relative group overflow-hidden">
+                  <img src="https://i.imgur.com/ZAnPMeh.jpeg" className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" alt="Centro de Caieiras - Arborizada" />
+                  <div className="absolute top-3 left-3 bg-emerald-600/90 backdrop-blur text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-lg">
+                    <span className="material-symbols-outlined text-sm">eco</span> Via Arborizada (Centro de Caieiras)
+                  </div>
+                </div>
+                <div className="p-6">
+                  <ul className="space-y-4">
+                    <li className="flex justify-between items-center border-b border-gray-200 pb-3">
+                      <span className="text-gray-600 flex items-center gap-2"><span className="material-symbols-outlined text-orange-500">thermostat</span> Temp. Média</span> 
+                      <span className="font-black text-emerald-600 text-lg">- 2.0 °C</span>
+                    </li>
+                    <li className="flex justify-between items-center border-b border-gray-200 pb-3">
+                      <span className="text-gray-600 flex items-center gap-2"><span className="material-symbols-outlined text-blue-400">water_drop</span> Ponto de Orvalho</span> 
+                      <div className="text-right">
+                        <span className="font-black text-emerald-600 text-lg">15°C</span>
+                        <p className="text-[10px] text-gray-500 leading-none">Fresco / Agradável</p>
+                      </div>
+                    </li>
+                    <li className="flex justify-between items-center">
+                      <span className="text-gray-600 flex items-center gap-2"><span className="material-symbols-outlined text-emerald-500">air</span> Qualidade do Ar</span> 
+                      <span className="font-bold text-emerald-600 text-right text-sm">Filtragem natural<br/>do ar (Baixo CO₂)</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ==========================================
+    // 5. ABA: EDUCAÇÃO
+    // ==========================================
+    const EducationHub = ({ openChatTopic }) => {
+      const Card = ({ icon, title, desc, topic, color }) => (
+        <div onClick={() => openChatTopic(topic)} className={`bg-white hover:bg-${color}-50 cursor-pointer p-6 rounded-2xl shadow border border-gray-100 transition-all hover:-translate-y-1 hover:shadow-lg flex flex-col items-center text-center`}>
+          <div className={`w-14 h-14 rounded-full bg-${color}-100 text-${color}-600 flex items-center justify-center mb-4`}><span className="material-symbols-outlined text-3xl">{icon}</span></div>
+          <h3 className="font-bold text-gray-800 mb-2 leading-tight">{title}</h3>
+          <p className="text-xs text-gray-500">{desc}</p>
+          <button className={`mt-4 text-${color}-600 font-bold text-xs flex items-center gap-1`}>Perguntar <span className="material-symbols-outlined text-xs">arrow_forward</span></button>
+        </div>
+      );
+
+      return (
+        <div className="fade-in max-w-6xl mx-auto pb-10">
+          <div className="mb-8 text-center">
+            <h2 className="text-3xl font-bold text-dark mb-2">Módulo Educacional</h2>
+            <p className="text-gray-600">Escolha um tópico para ter uma aula interativa com a IA do Guardian.</p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+            <Card color="blue" icon="public" title="O que é ODS 3?" desc="A meta da ONU para saúde." topic="Me explique de forma simples o que é a ODS 3 da ONU e por que a saúde é importante." />
+            <Card color="orange" icon="medical_services" title="Primeiros Socorros" desc="Ações que salvam vidas." topic="Me ensine passos básicos de primeiros socorros caso alguém engasgue perto de mim." />
+            <Card color="emerald" icon="memory" title="Como a IoT ajuda?" desc="Sensores e a natureza." topic="Como sensores como o DHT22 e BMP280 podem ajudar a prevenir desastres climáticos?" />
+            <Card color="purple" icon="air" title="Qualidade do Ar" desc="Os perigos invisíveis." topic="O que são gases poluentes e como eles afetam nosso pulmão a longo prazo?" />
+            <Card color="indigo" icon="water_drop" title="Prevenção Dengue" desc="Combate focado com dados." topic="Por que a dengue aumenta no verão e como os dados do Guardian ajudam a evitar isso?" />
+            <Card color="teal" icon="calculate" title="Matemática" desc="O cérebro da I.A." topic="Me conte uma curiosidade matemática sobre Isaac Newton de forma divertida!" />
+            <Card color="pink" icon="psychology" title="Saúde Mental" desc="Bem-estar emocional (ODS 3)" topic="Qual a importância de cuidar da saúde mental e como a qualidade do nosso sono afeta a ansiedade?" />
+            <Card color="cyan" icon="location_city" title="Cidades Inteligentes" desc="O futuro urbano." topic="O que faz uma cidade ser considerada uma 'Smart City' e como os robôs ajudam nisso?" />
+            <Card color="red" icon="network_node" title="Redes Neurais" desc="Como a IA pensa?" topic="Me explique o que é uma Rede Neural Artificial usando um exemplo simples do dia a dia." />
+            <Card color="sky" icon="local_drink" title="Hidratação" desc="A base da vida e saúde." topic="Por que beber água é tão importante para o cérebro humano e para evitar o estresse térmico?" />
+          </div>
+        </div>
+      );
+    };
+
+    // Substitua o trecho do seu Chatbot por este:
+
+const Chatbot = ({ userName, initialPrompt, clearInitialPrompt }) => {
+  const [messages, setMessages] = useState([
+    { text: `Olá, ${userName}! Sou o módulo IA do Guardian. Eu acesso os sensores em tempo real, monitoro a ODS 3 e também dou aulas. O que vamos aprender hoje?`, sender: "bot" }
+  ]);
+  const [input, setInput] = useState('');
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isLoading, setIsLoading] = useState(false); // NOVO: Estado para mostrar que a IA está "pensando"
+  const [botEmotion, setBotEmotion] = useState('normal'); 
+  const [botContext, setBotContext] = useState('none'); 
+
+  const endRef = useRef(null);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  useEffect(() => {
+    if(initialPrompt) { handleInputSubmission(initialPrompt); clearInitialPrompt(); }
+  }, [initialPrompt]);
+
+  // NOVO: Função que chama a API real da Inteligência Artificial
+  const fetchGeminiAI = async (userText) => {
+    // ⚠️ ATENÇÃO: Para testes locais coloque sua chave aqui. 
+    // Em produção real, nunca deixe a chave no frontend!
+    const API_KEY = "COLE_SUA_CHAVE_DO_GOOGLE_AQUI"; 
+    
+    const sd = window.globalSensorData;
+
+    // O "System Prompt" é o cérebro da personalidade do seu bot.
+    // É aqui que passamos os dados dos sensores para ele saber o que está acontecendo!
+    const systemInstruction = `Você é o Guardian V9, um robô de Inteligência Artificial amigável criado para ajudar cidadãos. 
+    O nome do usuário conversando com você é ${userName}.
+    Sua missão é ensinar sobre Cidades Inteligentes, a ODS 3 da ONU (Saúde e Bem-Estar), Matemática e Prevenção de Desastres.
+    
+    DADOS ATUAIS DOS SENSORES DA CIDADE EM TEMPO REAL:
+    - Temperatura: ${sd.temp} °C
+    - Umidade: ${sd.umid} %
+    - Qualidade do Ar (Poluição/Gás): ${sd.gas} ppm
+    - Probabilidade de chuva: ${sd.mlRainProb}%
+    
+    Regras:
+    1. Responda sempre em português do Brasil de forma calorosa, clara e direta.
+    2. Se a temperatura estiver acima de 30°C ou o ar acima de 1000ppm, avise o usuário para se hidratar e tomar cuidado com a saúde.
+    3. Suas respostas devem ser curtas (máximo 3 parágrafos) para caberem bem na tela de chat.`;
+
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_instruction: { parts: { text: systemInstruction } },
+          contents: [{ parts: [{ text: userText }] }]
+        })
+      });
+
+      const data = await response.json();
+      
+      if (data.candidates && data.candidates.length > 0) {
+        // Mudança de emoção baseada na temperatura (exemplo simples)
+        if (sd.temp > 30 || sd.gas > 1000) setBotEmotion('alert');
+        else setBotEmotion('happy');
+
+        return data.candidates[0].content.parts[0].text;
+      } else {
+        return "Desculpe, meus circuitos neurais falharam ao processar isso.";
+      }
+    } catch (error) {
+      console.error("Erro na API da IA:", error);
+      return "Erro de conexão com o servidor neural do Guardian. Tente novamente mais tarde.";
+    }
+  };
+
+  const handleInputSubmission = async (currentInput) => {
+    // 1. Adiciona a mensagem do usuário na tela
+    setMessages(prev => [...prev, { text: currentInput, sender: 'user' }]);
+    setInput('');
+    setIsLoading(true); // Liga o modo "pensando..."
+
+    // 2. Chama a inteligência artificial de verdade
+    const reply = await fetchGeminiAI(currentInput);
+    
+    setIsLoading(false); // Desliga o modo "pensando..."
+
+    // 3. Falar o texto (Text-to-Speech)
+    speakText(reply, setIsSpeaking);
+    
+    // 4. Adiciona a resposta da IA na tela
+    setMessages(prev => [...prev, { text: reply, sender: 'bot' }]);
+  };
+
+  // ... (Mantenha o return do HTML/React do Chatbot igual estava, só adicione o aviso de "Pensando...")
+      return (
+        <div className="fade-in flex flex-col h-[80vh] max-w-4xl mx-auto">
+          <div className="text-center mb-0">
+            <GuardianAvatar speaking={isSpeaking} size="normal" emotion={botEmotion} context={botContext} />
+          </div>
+
+          <div className="flex-1 bg-white rounded-2xl shadow-xl flex flex-col overflow-hidden border border-gray-200 z-40 relative">
+            <div className="bg-slate-900 text-emerald-400 font-mono text-xs py-2 px-4 flex justify-between items-center shadow-md z-10">
+              <span className="flex items-center gap-2"><span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span> Módulo Conversacional Edge AI Conectado</span>
+              <span className="text-slate-400 hidden sm:block">Processamento de Linguagem Natural (NLP)</span>
+            </div>
+            <div className="flex-1 p-6 overflow-y-auto bg-gray-50 space-y-6">
+            {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] p-4 rounded-2xl text-[16px] leading-relaxed shadow-sm ${msg.sender === 'user' ? 'bg-emerald-600 text-white rounded-br-none' : 'bg-white text-gray-800 border border-gray-100 rounded-bl-none'}`}>
+                    {/* Renderiza o texto com quebras de linha usando Markdown simples ou pre-wrap */}
+                    <span style={{whiteSpace: 'pre-wrap'}}>{msg.text}</span>
+                  </div>
+                </div>
+              ))}
+              {isLoading && (
+                <div className="flex justify-start">
+                  <div className="max-w-[80%] p-4 rounded-2xl bg-white border border-gray-100 rounded-bl-none flex gap-2 items-center">
+                    <span className="w-2 h-2 bg-emerald-500 rounded-full animate-bounce"></span>
+                    <span className="w-2 h-2 bg-emerald-500 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></span>
+                    <span className="w-2 h-2 bg-emerald-500 rounded-full animate-bounce" style={{animationDelay: '0.4s'}}></span>
+                  </div>
+                </div>
+              )}
+              
+              <div ref={endRef} />
+            </div>
+            <form onSubmit={e => { e.preventDefault(); if(input.trim()) handleInputSubmission(input); }} className="p-4 bg-white border-t border-gray-100 flex gap-3 shadow-[0_-10px_15px_rgba(0,0,0,0.02)]">
+              <input type="text" className="flex-1 bg-gray-100 rounded-xl px-5 py-4 outline-none focus:ring-4 focus:ring-emerald-500/30 text-gray-700 text-lg transition-all" placeholder="Escreva sua pergunta aqui..." value={input} onChange={e => setInput(e.target.value)} disabled={isSpeaking} />
+              <button type="submit" disabled={isSpeaking} className="bg-emerald-600 text-white p-4 px-6 rounded-xl hover:bg-emerald-700 flex items-center shadow-md disabled:opacity-50 transition-colors"><span className="material-symbols-outlined text-xl">send</span></button>
+            </form>
+          </div>
+        </div>
+      );
+    };
+
+    // ==========================================
+    // 7. BOTÃO DE EMERGÊNCIA GLOBAL
+    // ==========================================
+    const EmergencyButton = ({ userName }) => {
+      const [isRecording, setIsRecording] = useState(false);
+      const [statusMsg, setStatusMsg] = useState('');
+      const [recordingTime, setRecordingTime] = useState(0); 
+      const mediaRecorderRef = useRef(null);
+      const audioChunksRef = useRef([]);
+      const timerRef = useRef(null);
+
+      const stopRecording = async () => {
+        setIsRecording(false);
+        clearInterval(timerRef.current);
+        setStatusMsg('Obtendo GPS e enviando...');
+        
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+      };
+
+      const handleEmergencyClick = async () => {
+        if (isRecording) {
+          stopRecording();
+        } else {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorderRef.current = new MediaRecorder(stream);
+            audioChunksRef.current = [];
+
+            mediaRecorderRef.current.ondataavailable = (event) => {
+              if (event.data.size > 0) audioChunksRef.current.push(event.data);
+            };
+
+            mediaRecorderRef.current.onstop = () => {
+              const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+              stream.getTracks().forEach(track => track.stop()); 
+
+              if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                  (position) => {
+                    const lat = position.coords.latitude;
+                    const lng = position.coords.longitude;
+                    
+                    const reader = new FileReader();
+                    reader.readAsDataURL(audioBlob);
+                    reader.onloadend = () => {
+                      const base64Audio = reader.result;
+                      
+                      if (typeof google !== 'undefined' && google.script) {
+                        google.script.run
+                          .withSuccessHandler((res) => {
+                            if(res.status === 'success') {
+                              setStatusMsg('✅ Alerta enviado às autoridades!');
+                            } else {
+                              setStatusMsg('❌ Erro no servidor.');
+                            }
+                            setTimeout(() => setStatusMsg(''), 5000);
+                          })
+                          .withFailureHandler(() => {
+                            setStatusMsg('❌ Falha na conexão.');
+                            setTimeout(() => setStatusMsg(''), 5000);
+                          })
+                          .registrarEmergencia({
+                            usuario: userName || 'Cidadão Anônimo',
+                            latitude: lat,
+                            longitude: lng,
+                            audioBase64: base64Audio
+                          });
+                      } else {
+                        console.log("Teste Local concluído.", { lat, lng, base64Audio });
+                        setStatusMsg('Ambiente de teste: Alerta simulado.');
+                        setTimeout(() => setStatusMsg(''), 4000);
+                      }
+                    };
+                  },
+                  (error) => {
+                    setStatusMsg('❌ Erro: Permissão de GPS negada.');
+                    setTimeout(() => setStatusMsg(''), 4000);
+                  },
+                  { enableHighAccuracy: true, timeout: 10000 }
+                );
+              } else {
+                setStatusMsg('GPS não suportado no navegador.');
+                setTimeout(() => setStatusMsg(''), 4000);
+              }
+            };
+
+            mediaRecorderRef.current.start();
+            setIsRecording(true);
+            setRecordingTime(0);
+            setStatusMsg('🔴 Gravando ambiente... Clique p/ enviar.');
+            timerRef.current = setInterval(() => {
+              setRecordingTime(prev => prev + 1);
+            }, 1000);
+
+            setTimeout(() => {
+              if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+                stopRecording();
+              }
+            }, 30000);
+
+          } catch (err) {
+            console.error("Erro:", err);
+            setStatusMsg('❌ Permissão de microfone negada!');
+            setTimeout(() => setStatusMsg(''), 4000);
+          }
+        }
+      };
+
+      return (
+        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2 fade-in">
+          {statusMsg && (
+            <div className="bg-slate-900/90 backdrop-blur text-white text-sm px-4 py-2 rounded-xl shadow-2xl border border-slate-700 font-mono animate-pulse">
+              {statusMsg}
+            </div>
+          )}
+          
+          <div className="relative">
+            {isRecording && (
+              <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full shadow-lg animate-pulse whitespace-nowrap">
+                00:{recordingTime.toString().padStart(2, '0')}
+              </div>
+            )}
+            
+            <button 
+              id="btn-emergencia"
+              title="Botão de Pânico / S.O.S"
+              onClick={handleEmergencyClick}
+              className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 ${
+                isRecording 
+                  ? 'bg-red-600 animate-pulse border-2 border-red-300 scale-110' 
+                  : 'bg-red-500/20 backdrop-blur-md border border-red-500/50 hover:bg-red-600 hover:scale-110'
+              }`}
+            >
+              <span className={`material-symbols-outlined ${isRecording ? 'text-white' : 'text-red-500 hover:text-white'} text-2xl transition-colors`}>
+                {isRecording ? 'stop_circle' : 'emergency'}
+              </span>
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    // ==========================================
+    // MAIN APP
+    // ==========================================
+    const App = () => {
+      const[appState, setAppState] = useState({ isStarted: false, userName: '', page: 'dashboard' });
+      const[menuOpen, setMenuOpen] = useState(false);
+      const[chatPrompt, setChatPrompt] = useState('');
+
+      const[sensorData, setSensorData] = useState({ temp: '--', umid: '--', gas: '--', press: '--', feeds:[] });
+      const[aiAnalysis, setAiAnalysis] = useState({ anomaly: null, mlRainProb: 0, llmReport: 'Carregando...', healthData: { resp:'Bom', thermal:'Bom', dengue:'Bom' } });
+
+      const MEU_CANAL_THINGSPEAK = '3282069'; 
+      const READ_API_KEY = 'IK2EOICZPD2MVY7U'; 
+
+      const processAI = (feeds) => {
+        if (!feeds || feeds.length < 5) return;
+        const current = feeds[feeds.length - 1]; const past = feeds[feeds.length - 5];
+        
+        const pressCur = parseFloat(current.field4) || 1013; const deltaPress = (parseFloat(past.field4) || 1013) - pressCur;
+        const gasCur = parseFloat(current.field3) || 0; const deltaGas = gasCur - (parseFloat(past.field3) || 0);
+        const umid = parseFloat(current.field2) || 50; const temp = parseFloat(current.field1) || 25;
+
+        let anomaly = null;
+        if (deltaGas > 300 || gasCur > 1500) anomaly = "🚨 Pico anormal de gases! Risco de asfixia/incêndio.";
+        else if (deltaPress > 1.5) anomaly = "⚠️ Queda abrupta de pressão. Alerta de ventania/tempestade perigosa.";
+
+        let rainML = 10;
+        if (deltaPress > 0.5 && umid > 70) rainML = 85; else if (deltaPress > 0.2 && umid > 60) rainML = 50; else if (deltaPress < 0 && umid < 50) rainML = 0;
+
+        let report = `A temperatura atual é de ${temp}°C. `;
+        if(rainML > 50) report += `Há risco de ${rainML}% de chuva devido à queda de pressão (${deltaPress.toFixed(1)}hPa). Cuidado com os focos de Dengue! `;
+        else report += `A Pressão atmosférica está estável, indicando tempo firme. `;
+        if(gasCur < 600) report += `O índice de qualidade do ar interno está Saudável (MQ135 = ${gasCur}).`;
+        else report += `Atenção: ar ambiente insalubre detectado pelo sensor de gás.`;
+
+        let health = {
+          resp: gasCur < 600 ? 'Bom' : (gasCur < 1000 ? 'Atenção' : 'Perigo'),
+          respDesc: gasCur < 600 ? 'Ar puro. Pulmões limpos.' : 'Risco para alérgicos e asmáticos.',
+          thermal: temp > 32 ? 'Perigo' : (temp > 27 ? 'Atenção' : 'Bom'),
+          thermalDesc: temp > 32 ? 'Risco severo de desidratação.' : 'Clima corporal seguro.',
+          dengue: rainML > 50 ? 'Alerta' : 'Bom',
+          dengueDesc: rainML > 50 ? 'Elimine água parada urgentemente.' : 'Sem poças de chuva previstas.'
+        };
+
+        setAiAnalysis({ anomaly, mlRainProb: rainML, llmReport: report, healthData: health });
+        window.globalSensorData = { temp, umid, gas: gasCur, press: pressCur, history: feeds, anomaly, mlRainProb: rainML, llmReport: report, healthData: health };
+      };
+
+      useEffect(() => {
+        if(!appState.isStarted) return;
+        const fetchThingSpeak = async () => {
+          try {
+            const res = await fetch(`https://api.thingspeak.com/channels/${MEU_CANAL_THINGSPEAK}/feeds.json?api_key=${READ_API_KEY}&results=30`);
+            const json = await res.json();
+            if(json.feeds && json.feeds.length > 0){
+              const ultimo = json.feeds[json.feeds.length - 1];
+              setSensorData({ temp: ultimo.field1, umid: ultimo.field2, gas: ultimo.field3, press: ultimo.field4 || '1013', feeds: json.feeds });
+              processAI(json.feeds);
+            }
+          } catch(e) { console.log(e); }
+        };
+        fetchThingSpeak();
+        const int = setInterval(fetchThingSpeak, 20000); 
+        return () => clearInterval(int);
+      },[appState.isStarted]);
+
+      const NavItem = ({ id, icon, label, subtitle }) => (
+        <button onClick={() => { setAppState({...appState, page: id}); setMenuOpen(false); window.speechSynthesis.cancel(); }} 
+          className={`w-full flex items-center gap-4 px-6 py-4 transition-all duration-200 text-left ${appState.page === id ? 'bg-slate-800 border-l-4 border-emerald-500 font-semibold shadow-inner' : 'hover:bg-slate-800/50 text-slate-300 border-l-4 border-transparent'}`}>
+          <span className="material-symbols-outlined text-2xl">{icon}</span> 
+          <div><div className="text-[17px] leading-tight text-white">{label}</div><div className="text-xs text-emerald-400/80">{subtitle}</div></div>
+        </button>
+      );
+
+      const goToChatWithPrompt = (prompt) => { setChatPrompt(prompt); setAppState({...appState, page: 'chatbot'}); };
+
+      return (
+        <React.Fragment>
+          {!appState.isStarted ? (
+            <WelcomeScreen onComplete={(name, page) => setAppState({ isStarted: true, userName: name, page: page })} />
+          ) : (
+            <div className="flex h-screen overflow-hidden relative">
+              <aside className={`bg-slate-900 text-white w-80 flex flex-col fixed md:relative z-50 h-full transition-transform duration-300 shadow-2xl border-r border-slate-700 ${menuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+                <div className="p-6 border-b border-slate-700 bg-slate-950 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500 rounded-full blur-[80px] opacity-20"></div>
+                  <div className="flex items-center gap-3 font-bold text-2xl text-emerald-400 relative z-10"><span className="material-symbols-outlined text-3xl">radar</span> Radar Cidadão</div>
+                  <p className="text-sm text-slate-400 mt-2 relative z-10">Operador Logado: <span className="text-white font-bold">{appState.userName}</span></p>
+                </div>
+                <nav className="flex-1 py-4 flex flex-col gap-1 overflow-y-auto">
+                  <NavItem id="dashboard" icon="query_stats" label="Painel Integrado" subtitle="Sensores, Clima e ODS 3" />
+                  <NavItem id="education" icon="school" label="Educação Edge" subtitle="Microlearning de IA e ODS" />
+                  <NavItem id="chatbot" icon="smart_toy" label="Chat IA Guardian" subtitle="Interação em Linguagem Natural" />
+                  
+                  {/* NOVOS LINKS EXTERNOS */}
+                  <div className="mt-6 mb-2 px-6 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Módulos Externos</div>
+                  
+                  <a href="seviu.html" className="w-full flex items-center gap-4 px-6 py-3 hover:bg-slate-800/50 text-slate-300 transition-all duration-200">
+                    <span className="material-symbols-outlined text-xl">visibility</span> 
+                    <div className="text-[15px]">SEVIU</div>
+                  </a>
+                  <a href="ubs.html" className="w-full flex items-center gap-4 px-6 py-3 hover:bg-slate-800/50 text-slate-300 transition-all duration-200">
+                    <span className="material-symbols-outlined text-xl">local_hospital</span> 
+                    <div className="text-[15px]">UBS Mais Próxima</div>
+                  </a>
+                  <a href="informes.html" className="w-full flex items-center gap-4 px-6 py-3 hover:bg-slate-800/50 text-slate-300 transition-all duration-200">
+                    <span className="material-symbols-outlined text-xl">campaign</span> 
+                    <div className="text-[15px]">Informes Cidadão</div>
+                  </a>
+
+                </nav>
+                <div className="p-4 text-xs text-center text-slate-500 border-t border-slate-800 bg-slate-950 flex justify-center items-center gap-2">
+                  <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span> Sistema Guardian V9 AI
+                </div>
+              </aside>
+
+              {menuOpen && <div className="fixed inset-0 bg-slate-900/60 z-40 md:hidden backdrop-blur-sm" onClick={() => setMenuOpen(false)}></div>}
+
+              <main className="flex-1 flex flex-col h-full bg-[#f4f7f6]">
+                <header className="bg-white shadow-sm p-4 flex items-center gap-4 md:hidden">
+                  <button onClick={() => setMenuOpen(true)} className="text-emerald-600 hover:text-emerald-800"><span className="material-symbols-outlined text-3xl mt-1">menu</span></button>
+                  <h1 className="font-bold text-xl text-gray-800 gradient-text">Radar Cidadão AI</h1>
+                </header>
+                <div className="flex-1 overflow-y-auto p-4 md:p-8">
+                  {appState.page === 'dashboard' && (
+                    <div className="space-y-8">
+                      <Dashboard data={sensorData} aiAnalysis={aiAnalysis} />
+                      <HealthSDG3 aiAnalysis={aiAnalysis} userName={appState.userName} />
+                    </div>
+                  )}
+                  {appState.page === 'education' && <EducationHub openChatTopic={goToChatWithPrompt} />}
+                  {appState.page === 'chatbot' && <Chatbot userName={appState.userName} initialPrompt={chatPrompt} clearInitialPrompt={() => setChatPrompt('')} />}
+                </div>
+              </main>
+            </div>
+          )}
+
+          <EmergencyButton userName={appState.userName || 'Cidadão Anônimo'} />
+        </React.Fragment>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>

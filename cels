@@ -458,7 +458,7 @@
       const generateAIInsight = async () => {
         setIsGeneratingInsight(true);
         setInsight(null);
-        const GEMINI_API_KEY = "AIzaSyD2WnHFGOIGENTEFALSAHGFHGFHGFHFHFHyzvo"; 
+        const GEMINI_API_KEY = ""; 
         
         if (posts.length === 0) {
           setInsight("⚠️ Nenhum relato na comunidade para a IA analisar.");

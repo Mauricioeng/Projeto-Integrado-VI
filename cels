@@ -128,7 +128,7 @@
     // Configuração do Firebase
     const firebaseConfig = {
       apiKey: "AIzaSyDcLHqZPPzcBowKpoopopoEbYm1iH0UipeOpHdq2M",
-      authDomain: "projetointegradpoopor6-64791.firebaseapp.com",
+      authDomain: "projetntegradpoopor6-64791.firebaseapp.com",
       projectId: "projetointegradopooppor6-64791",
       storageBucket: "",
       messagingSenderId: "",

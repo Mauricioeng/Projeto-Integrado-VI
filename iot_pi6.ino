@@ -11,8 +11,8 @@
 // CONFIGURAÇÕES DE REDE E THINGSPEAK
 // ==========================================
 const char* ssid = "Maurício 2.4";
-const char* password = "961960804m";
-String writeAPIKey = "ULAG2Z8HG9WR0HGB"; 
+const char* password = "9614m";
+String writeAPIKey = "ULAHGB"; 
 
 // ==========================================
 // MAPEAMENTO DE PINOS
